@@ -14,7 +14,7 @@ import (
 
 const AuthorizationPrefixTMA = "tma"
 
-type Claims initdata.InitData
+type Claims = initdata.InitData
 
 type TmaAuth struct {
 	token string
@@ -28,16 +28,16 @@ func NewTmaAuth(token string, expIn time.Duration) *TmaAuth {
 	}
 }
 
-func (t *TmaAuth) ParseToken(ctx context.Context, token string) (*Claims, error) {
+func (t *TmaAuth) ParseToken(ctx context.Context, token string) (Claims, error) {
 	err := initdata.Validate(token, t.token, t.expIn)
 	if err != nil {
-		return nil, err
+		return Claims{}, err
 	}
 	data, err := initdata.Parse(token)
 	if err != nil {
-		return nil, err
+		return Claims{}, err
 	}
-	return (*Claims)(&data), nil
+	return data, nil
 }
 
 func (t *TmaAuth) GenerateToken(ctx context.Context, claims *Claims) (string, error) {

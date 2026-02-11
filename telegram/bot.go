@@ -17,7 +17,7 @@ type Config struct {
 // It wraps the underlying bot client and provides additional functionality for
 // handling messages, authentication, and error processing.
 type Bot struct {
-	config *Config
+	config Config
 	bot    *bot.Bot
 
 	middlewares    []MiddlewareFunc
@@ -29,7 +29,7 @@ type Bot struct {
 // NewApp creates a new Telegram bot application with the provided configuration and options.
 // It initializes the bot client, applies middleware, and sets up default handlers.
 // Returns an error if the bot token is invalid or client initialization fails.
-func NewApp(config *Config, opts ...Option) (*Bot, error) {
+func NewApp(config Config, opts ...Option) (*Bot, error) {
 	opt := newOptions(opts...)
 	app := &Bot{
 		config:         config,
