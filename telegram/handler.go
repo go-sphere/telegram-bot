@@ -55,7 +55,7 @@ func NewSingleFlightMiddleware() MiddlewareFunc {
 				return next(ctx, update)
 			}
 			key := strconv.Itoa(update.CallbackQuery.Message.Message.ID)
-			_, err, _ := sf.Do(key, func() (interface{}, error) {
+			_, err, _ := sf.Do(key, func() (any, error) {
 				return nil, next(ctx, update)
 			})
 			return err
@@ -99,7 +99,7 @@ func NewGroupMessageFilterMiddleware(b *bot.Bot, trimMention bool, infoExpire ti
 	}
 
 	getBotInfo := func(ctx context.Context, sf *singleflight.Group) (int64, string, error) {
-		v, err, _ := sf.Do("getMe", func() (interface{}, error) {
+		v, err, _ := sf.Do("getMe", func() (any, error) {
 			// 判断缓存存在且未过期，则直接使用
 			if user != nil && time.Since(ts) < infoExpire {
 				return user, nil
