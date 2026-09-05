@@ -1,6 +1,6 @@
 module github.com/go-sphere/telegram-bot
 
-go 1.25.6
+go 1.26.8
 
 require (
 	github.com/go-sphere/jsoncompressor v0.0.3
