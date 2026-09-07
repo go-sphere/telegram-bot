@@ -10,9 +10,10 @@ import (
 
 // options holds configuration options for creating a Telegram bot application.
 type options struct {
-	noRouteHandler bot.HandlerFunc   // Handler for unmatched routes
-	errorHandler   ErrorHandlerFunc  // Handler for processing errors
-	authExtractor  AuthExtractorFunc // Function to extract authentication data
+	noRouteHandler       bot.HandlerFunc  // Handler for unmatched routes
+	errorHandler         ErrorHandlerFunc // Handler for processing errors
+	authExtractor        AuthExtractorFunc
+	deleteWebhookOnStart bool
 
 	botOptions  []bot.Option     // Options to pass to the underlying bot client
 	middlewares []MiddlewareFunc // Middleware functions to apply to handlers
@@ -32,9 +33,28 @@ func newOptions(opts ...Option) *options {
 			}
 		},
 		errorHandler: func(ctx context.Context, bot *bot.Bot, update *Update, err error) {
-			slog.Error("receive error", slog.String("update", update.Message.Text))
+			if update == nil {
+				slog.Error("receive error", slog.Any("error", err))
+				return
+			}
+			if update.Message != nil {
+				slog.Error("receive message error",
+					slog.Any("error", err),
+					slog.String("text", update.Message.Text),
+				)
+				return
+			}
+			if update.CallbackQuery != nil {
+				slog.Error("receive callback query error",
+					slog.Any("error", err),
+					slog.String("data", update.CallbackQuery.Data),
+				)
+				return
+			}
+			slog.Error("receive error", slog.Any("error", err))
 		},
-		authExtractor: DefaultAuthExtractor,
+		authExtractor:        DefaultAuthExtractor,
+		deleteWebhookOnStart: true,
 		botOptions: []bot.Option{
 			bot.WithSkipGetMe(),
 			bot.WithMiddlewares(NewRecoveryMiddleware()),
@@ -68,6 +88,16 @@ func WithDefaultHandler(fn bot.HandlerFunc) Option {
 func WithAuthExtractor(extractor AuthExtractorFunc) Option {
 	return func(o *options) {
 		o.authExtractor = extractor
+	}
+}
+
+// WithDeleteWebhookOnStart controls whether Start deletes any previously
+// configured webhook before beginning long polling. It is enabled by default so
+// a leftover webhook cannot steal updates; disable it when a webhook is managed
+// out of band or when Start is used alongside webhook mode.
+func WithDeleteWebhookOnStart(enabled bool) Option {
+	return func(o *options) {
+		o.deleteWebhookOnStart = enabled
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -44,9 +45,27 @@ func WithMiddleware(h HandlerFunc, e ErrorHandlerFunc, middleware ...MiddlewareF
 	}
 }
 
+// callbackSingleFlightKey builds the deduplication key used for callback queries.
+// It identifies the originating message (chat + message id, inline id, or the
+// callback id when neither is available) together with the pressed button data,
+// so pressing different buttons of the same message is not conflated into one
+// request. The message can be nil when it was deleted or is an inline message.
+func callbackSingleFlightKey(cq *models.CallbackQuery) string {
+	var msgID string
+	switch {
+	case cq.Message.Message != nil:
+		msgID = strconv.FormatInt(cq.Message.Message.Chat.ID, 10) + ":" + strconv.Itoa(cq.Message.Message.ID)
+	case cq.InlineMessageID != "":
+		msgID = "inline:" + cq.InlineMessageID
+	default:
+		msgID = "unknown:" + cq.ID
+	}
+	return msgID + ":" + cq.Data
+}
+
 // NewSingleFlightMiddleware creates a middleware that prevents duplicate callback query processing.
-// It uses singleflight to ensure that multiple identical callback queries from the same message
-// are processed only once, based on the message ID as the deduplication key.
+// It uses singleflight to ensure that multiple identical callback queries (same message and same
+// button data) are processed only once.
 func NewSingleFlightMiddleware() MiddlewareFunc {
 	sf := &singleflight.Group{}
 	return func(next HandlerFunc) HandlerFunc {
@@ -54,7 +73,7 @@ func NewSingleFlightMiddleware() MiddlewareFunc {
 			if update.CallbackQuery == nil {
 				return next(ctx, update)
 			}
-			key := strconv.Itoa(update.CallbackQuery.Message.Message.ID)
+			key := callbackSingleFlightKey(update.CallbackQuery)
 			_, err, _ := sf.Do(key, func() (any, error) {
 				return nil, next(ctx, update)
 			})
@@ -78,33 +97,145 @@ func NewRecoveryMiddleware() bot.Middleware {
 	}
 }
 
+// utf16ByteRange converts an entity range into byte bounds of s. The Telegram
+// Bot API measures MessageEntity offset and length in UTF-16 code units, so they
+// cannot be used to slice a Go string directly. ok is false when the range does
+// not start and end on rune boundaries within s (for example when the offset
+// falls inside a surrogate pair, which never happens for well-formed entities).
+func utf16ByteRange(s string, offset, length int) (start, end int, ok bool) {
+	if offset < 0 || length < 0 {
+		return 0, 0, false
+	}
+	limit := offset + length
+	start, end = -1, -1
+	u16 := 0
+	for i, r := range s {
+		if u16 == offset {
+			start = i
+		}
+		if u16 == limit {
+			end = i
+			break
+		}
+		u16 += utf16.RuneLen(r)
+	}
+	// The entity may end exactly at the end of the string.
+	if start >= 0 && end < 0 && u16 == limit {
+		end = len(s)
+	}
+	if start < 0 || end < 0 {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// entitySlice returns the substring of s covered by the entity, converting the
+// entity's UTF-16 offsets to byte offsets first. ok is false when the range is
+// out of bounds.
+func entitySlice(s string, e models.MessageEntity) (string, bool) {
+	start, end, ok := utf16ByteRange(s, e.Offset, e.Length)
+	if !ok {
+		return "", false
+	}
+	return s[start:end], true
+}
+
+// removeEntityRange removes the whole range covered by the entity from text.
+func removeEntityRange(text string, e models.MessageEntity) string {
+	start, end, ok := utf16ByteRange(text, e.Offset, e.Length)
+	if !ok {
+		return text
+	}
+	return text[:start] + text[end:]
+}
+
+// removeEntitySuffix removes the trailing suffix (for example "@botname") from
+// the text covered by the entity, keeping the rest of the entity (for example
+// the "/command" itself).
+func removeEntitySuffix(text string, e models.MessageEntity, suffix string) string {
+	start, end, ok := utf16ByteRange(text, e.Offset, e.Length)
+	if !ok {
+		return text
+	}
+	entityText := text[start:end]
+	return text[:start] + strings.TrimSuffix(entityText, suffix) + text[end:]
+}
+
+// trimBotMentions removes mentions of the bot from text and reports whether the
+// text addresses the bot. When trim is false it only detects. Detection covers
+// "@username" mentions, text_mention entities pointing at the bot by user id and
+// bot commands carrying an "@username" suffix. Trimming stops after the first
+// match: entity offsets describe the original text, so removing one mention makes
+// every later offset stale and they must not be applied anymore.
+func trimBotMentions(text string, entities []models.MessageEntity, botID int64, username string, trim bool) (string, bool) {
+	for _, e := range entities {
+		entityText, ok := entitySlice(text, e)
+		if !ok {
+			continue
+		}
+		switch e.Type {
+		case models.MessageEntityTypeMention:
+			if entityText == "@"+username {
+				if !trim {
+					return text, true
+				}
+				return removeEntityRange(text, e), true
+			}
+		case models.MessageEntityTypeTextMention:
+			if e.User != nil && e.User.ID == botID {
+				if !trim {
+					return text, true
+				}
+				return removeEntityRange(text, e), true
+			}
+		case models.MessageEntityTypeBotCommand:
+			if strings.HasSuffix(entityText, "@"+username) {
+				if !trim {
+					return text, true
+				}
+				return removeEntitySuffix(text, e, "@"+username), true
+			}
+		default:
+			continue
+		}
+	}
+	return text, false
+}
+
+// botInfoFetcher is satisfied by *bot.Bot. It exists so the group filter can be
+// tested with a fake without a live bot client.
+type botInfoFetcher interface {
+	GetMe(ctx context.Context) (*models.User, error)
+}
+
 // NewGroupMessageFilterMiddleware creates a middleware that filters group messages based on bot mentions.
 // It only processes group messages where the bot is explicitly mentioned through @username, replies,
 // or text mentions. The middleware caches bot information to reduce API calls and optionally
 // removes mention text from the message content.
 //
 // Parameters:
-//   - b: The bot instance used to retrieve bot information
+//   - b: The bot client used to retrieve bot information
 //   - trimMention: Whether to remove mention text from processed messages
 //   - infoExpire: Duration to cache bot information before refreshing
-func NewGroupMessageFilterMiddleware(b *bot.Bot, trimMention bool, infoExpire time.Duration) MiddlewareFunc {
+func NewGroupMessageFilterMiddleware(b botInfoFetcher, trimMention bool, infoExpire time.Duration) MiddlewareFunc {
 	var (
 		ts   time.Time
 		sf   singleflight.Group
 		user *models.User
 	)
 
+	// Channel messages reach the bot as channel_post updates, not as
+	// update.Message, so channel does not need to be handled here.
 	isGroupChatType := func(t models.ChatType) bool {
-		return t == models.ChatTypeGroup || t == models.ChatTypeSupergroup || t == models.ChatTypeChannel
+		return t == models.ChatTypeGroup || t == models.ChatTypeSupergroup
 	}
 
 	getBotInfo := func(ctx context.Context, sf *singleflight.Group) (int64, string, error) {
 		v, err, _ := sf.Do("getMe", func() (any, error) {
-			// 判断缓存存在且未过期，则直接使用
+			// Use the cached bot info while it is still fresh.
 			if user != nil && time.Since(ts) < infoExpire {
 				return user, nil
 			}
-			// 获取bot信息
 			u, err := b.GetMe(ctx)
 			if err != nil {
 				return nil, err
@@ -119,80 +250,45 @@ func NewGroupMessageFilterMiddleware(b *bot.Bot, trimMention bool, infoExpire ti
 		return v.(*models.User).ID, v.(*models.User).Username, nil
 	}
 
-	checkMention := func(text string, entities []models.MessageEntity, id int64, username string, trimMention bool) (string, bool) {
-		isMention := false
-		for _, entity := range entities {
-			entityStr := text[entity.Offset : entity.Offset+entity.Length]
-			switch entity.Type {
-			case models.MessageEntityTypeMention: // "mention"适用于有用户名的普通用户
-				if entityStr == "@"+username {
-					isMention = true
-					if trimMention {
-						text = text[:entity.Offset] + text[entity.Offset+entity.Length:]
-					}
-				}
-			case models.MessageEntityTypeTextMention: // "text_mention"适用于没有用户名的用户或需要通过ID提及用户的情况
-				if entity.User.ID == id {
-					isMention = true
-					if trimMention {
-						text = text[:entity.Offset] + text[entity.Offset+entity.Length:]
-					}
-				}
-			case models.MessageEntityTypeBotCommand: // "bot_command"适用于命令
-				if strings.HasSuffix(entityStr, "@"+username) {
-					isMention = true
-					if trimMention {
-						entityStr = strings.ReplaceAll(entityStr, "@"+username, "")
-						text = text[:entity.Offset] + entityStr + text[entity.Offset+entity.Length:]
-					}
-				}
-			default:
-				continue
-			}
-		}
-		return text, isMention
-	}
-
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, update *Update) error {
-			// 判断是不是群消息，则直接处理
+			// Non-group messages are always processed.
 			if update.Message == nil || !isGroupChatType(update.Message.Chat.Type) {
 				return next(ctx, update)
 			}
 
 			id, username, err := getBotInfo(ctx, &sf)
 			if err != nil {
-				// 获取bot信息失败，放弃处理
 				slog.Error("get bot info error", slog.String("error", err.Error()))
 				return err
 			}
 
-			// 判断是不是回复消息，判断回复的消息是否是指定的bot，是则处理
-			if update.Message.ReplyToMessage != nil && update.Message.ReplyToMessage.From.ID == id {
+			// A reply to one of the bot's own messages always addresses the bot.
+			if update.Message.ReplyToMessage != nil && update.Message.ReplyToMessage.From != nil && update.Message.ReplyToMessage.From.ID == id {
 				return next(ctx, update)
 			}
 
 			isMention := false
 
-			// 判断Text中是否有提及bot，有则处理
-			if update.Message.Entities != nil && update.Message.Text != "" {
-				text, mention := checkMention(update.Message.Text, update.Message.Entities, id, username, trimMention)
+			// Check the text for a mention of the bot.
+			if len(update.Message.Entities) > 0 && update.Message.Text != "" {
+				text, mention := trimBotMentions(update.Message.Text, update.Message.Entities, id, username, trimMention)
 				update.Message.Text = text
 				isMention = mention || isMention
 			}
 
-			// 判断Caption中是否有提及bot，有则处理
-			if !isMention && update.Message.CaptionEntities != nil && update.Message.Caption != "" {
-				text, mention := checkMention(update.Message.Caption, update.Message.CaptionEntities, id, username, trimMention)
-				update.Message.Text = text
+			// Check the caption of a media message for a mention of the bot.
+			if !isMention && len(update.Message.CaptionEntities) > 0 && update.Message.Caption != "" {
+				caption, mention := trimBotMentions(update.Message.Caption, update.Message.CaptionEntities, id, username, trimMention)
+				update.Message.Caption = caption
 				isMention = mention || isMention
 			}
 
-			// 判断是不是提及了bot，是则处理
-			if isMention {
-				return next(ctx, update)
+			// Only process group messages that mention the bot.
+			if !isMention {
+				return nil
 			}
-			return nil
+			return next(ctx, update)
 		}
 	}
 }

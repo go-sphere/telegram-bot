@@ -1,44 +1,19 @@
 package telegram
 
-import (
-	"context"
-	"time"
-)
+import "context"
 
-var _ context.Context = (*values)(nil)
+// ContextKey is the type of the context keys used by this package to carry
+// per-update values (see AuthUserIDKey and AuthSubjectKey). Keeping a dedicated
+// type avoids collisions with unrelated string keys in the same context chain.
+type ContextKey string
 
-type values struct {
-	context.Context
-	data map[string]any
-}
-
+// contextWithValues returns a context carrying every value of data under its
+// own typed key. Map iteration order is not deterministic, which is harmless:
+// the resulting chain of context.WithValue calls behaves identically for every
+// order because each key is distinct.
 func contextWithValues(ctx context.Context, data map[string]any) context.Context {
-	if len(data) == 0 {
-		return ctx
+	for k, v := range data {
+		ctx = context.WithValue(ctx, ContextKey(k), v)
 	}
-	return &values{
-		Context: ctx,
-		data:    data,
-	}
-}
-
-func (c *values) Deadline() (deadline time.Time, ok bool) {
-	return c.Context.Deadline()
-}
-
-func (c *values) Done() <-chan struct{} {
-	return c.Context.Done()
-}
-
-func (c *values) Err() error {
-	return c.Context.Err()
-}
-
-func (c *values) Value(key any) any {
-	if strKey, ok := key.(string); ok {
-		if v, exist := c.data[strKey]; exist {
-			return v
-		}
-	}
-	return c.Context.Value(key)
+	return ctx
 }

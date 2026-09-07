@@ -20,6 +20,8 @@ type Bot struct {
 	config Config
 	bot    *bot.Bot
 
+	deleteWebhookOnStart bool
+
 	middlewares    []MiddlewareFunc
 	noRouteHandler bot.HandlerFunc
 	errorHandler   ErrorHandlerFunc
@@ -32,11 +34,12 @@ type Bot struct {
 func NewApp(config Config, opts ...Option) (*Bot, error) {
 	opt := newOptions(opts...)
 	app := &Bot{
-		config:         config,
-		middlewares:    opt.middlewares,
-		noRouteHandler: opt.noRouteHandler,
-		errorHandler:   opt.errorHandler,
-		authExtractor:  opt.authExtractor,
+		config:               config,
+		deleteWebhookOnStart: opt.deleteWebhookOnStart,
+		middlewares:          opt.middlewares,
+		noRouteHandler:       opt.noRouteHandler,
+		errorHandler:         opt.errorHandler,
+		authExtractor:        opt.authExtractor,
 	}
 	opt.botOptions = append(opt.botOptions,
 		bot.WithDefaultHandler(
@@ -73,16 +76,27 @@ func (b *Bot) API() *bot.Bot {
 }
 
 // Start begins the bot's update polling and message processing.
-// It removes any existing webhook and starts listening for updates using long polling.
+// Unless disabled with WithDeleteWebhookOnStart(false), it first removes any
+// existing webhook so a leftover webhook cannot steal updates, then starts long
+// polling. It blocks until ctx is cancelled. The webhook removal error, if any,
+// is returned instead of being swallowed.
 func (b *Bot) Start(ctx context.Context) error {
-	_, _ = b.bot.DeleteWebhook(context.Background(), &bot.DeleteWebhookParams{})
+	if b.deleteWebhookOnStart {
+		if _, err := b.bot.DeleteWebhook(ctx, &bot.DeleteWebhookParams{}); err != nil {
+			return err
+		}
+	}
 	b.bot.Start(ctx)
 	return nil
 }
 
 // Close gracefully shuts down the bot and releases resources.
 // It stops the update polling and closes the underlying bot client connection.
+// Close is idempotent: calling it again after a successful close is a no-op.
 func (b *Bot) Close(ctx context.Context) error {
+	if b.bot == nil {
+		return nil
+	}
 	_, err := b.bot.Close(ctx)
 	b.bot = nil
 	return err
@@ -106,12 +120,38 @@ func (b *Bot) BindNoRoute(handlerFunc HandlerFunc, middlewares ...MiddlewareFunc
 	b.noRouteHandler = WithMiddleware(handlerFunc, b.errorHandler, b.appendMiddlewares(middlewares...)...)
 }
 
+// matchCommandMessage reports whether msg starts with the given slash command,
+// optionally carrying an "@username" suffix (for example "/start" or
+// "/start@MyBot"). The match is token based so "/start" never matches "/startup"
+// or "foo /start". Commands addressed to another bot (e.g. "/start@OtherBot")
+// still match here: in group chats NewGroupMessageFilterMiddleware drops them
+// before the handler runs, while the bot's own username is not known without an
+// extra GetMe call.
+func matchCommandMessage(msg *models.Message, command string) bool {
+	if msg == nil {
+		return false
+	}
+	command = strings.TrimPrefix(command, "/")
+	token := msg.Text
+	if i := strings.IndexAny(token, " \t\n"); i >= 0 {
+		token = token[:i]
+	}
+	if token == "/"+command {
+		return true
+	}
+	return strings.HasPrefix(token, "/"+command+"@")
+}
+
 // BindCommand registers a handler for a specific bot command (e.g., "/start", "/help").
 // The command parameter should not include the leading slash, as it will be added automatically.
+// Commands match on the first word of a message: "/start" matches "/start" and
+// "/start@BotName", but not "/startup".
 func (b *Bot) BindCommand(command string, handlerFunc HandlerFunc, middlewares ...MiddlewareFunc) {
 	fn := WithMiddleware(handlerFunc, b.errorHandler, b.appendMiddlewares(middlewares...)...)
-	command = "/" + strings.TrimPrefix(command, "/")
-	b.bot.RegisterHandler(bot.HandlerTypeMessageText, command, bot.MatchTypePrefix, fn)
+	command = strings.TrimPrefix(command, "/")
+	b.bot.RegisterHandlerMatchFunc(func(update *models.Update) bool {
+		return matchCommandMessage(update.Message, command)
+	}, fn)
 }
 
 // BindCallback registers a handler for callback query data with a specific route prefix.

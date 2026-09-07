@@ -21,9 +21,31 @@ func (f AuthExtractorFunc) ExtractorAuth(ctx context.Context, update *Update) (m
 	return f(ctx, update)
 }
 
+// Authentication context keys.
+const (
+	// AuthUserIDKey is the context key under which the authenticated user ID is stored.
+	AuthUserIDKey ContextKey = "telegram.auth.uid"
+	// AuthSubjectKey is the context key under which the authentication subject (username) is stored.
+	AuthSubjectKey ContextKey = "telegram.auth.subject"
+)
+
+// AuthUserID returns the authenticated user ID extracted from the update, and
+// whether it was present.
+func AuthUserID(ctx context.Context) (int64, bool) {
+	v, ok := ctx.Value(AuthUserIDKey).(int64)
+	return v, ok
+}
+
+// AuthSubject returns the authentication subject (username) extracted from the
+// update, and whether it was present.
+func AuthSubject(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(AuthSubjectKey).(string)
+	return v, ok
+}
+
 // NewAuthMiddleware creates a middleware that extracts authentication information from updates.
-// It uses the provided AuthExtractor to get user data and injects it into the request context
-// using metadata. The extracted data becomes available to downstream handlers.
+// It uses the provided AuthExtractor to get user data and injects it into the request context.
+// The extracted data becomes available to downstream handlers.
 func NewAuthMiddleware(auth AuthExtractor) MiddlewareFunc {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, update *Update) error {
@@ -38,7 +60,9 @@ func NewAuthMiddleware(auth AuthExtractor) MiddlewareFunc {
 
 // DefaultAuthExtractor is the default implementation for extracting authentication data from updates.
 // It extracts user ID and username from either message or callback query updates.
-// Returns a map containing "uid" (user ID) and "subject" (username) if a user is found.
+// The values are only advisory: they identify who sent the update but carry no
+// proof of authenticity. Security-sensitive flows must validate the signature
+// (for example with tmaauth) and authorize on the server side.
 func DefaultAuthExtractor(ctx context.Context, update *Update) (map[string]any, error) {
 	var user *models.User
 	if update.Message != nil {
@@ -51,7 +75,7 @@ func DefaultAuthExtractor(ctx context.Context, update *Update) (map[string]any, 
 		return nil, nil
 	}
 	return map[string]any{
-		"uid":     user.ID,
-		"subject": user.Username,
+		string(AuthUserIDKey):  user.ID,
+		string(AuthSubjectKey): user.Username,
 	}, nil
 }
