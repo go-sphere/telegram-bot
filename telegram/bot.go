@@ -82,7 +82,9 @@ func (b *Bot) API() *bot.Bot {
 // is returned instead of being swallowed.
 func (b *Bot) Start(ctx context.Context) error {
 	if b.deleteWebhookOnStart {
-		if _, err := b.bot.DeleteWebhook(ctx, &bot.DeleteWebhookParams{}); err != nil {
+		// nil params so go-telegram/bot sends an empty body instead of a
+		// boundary-only multipart form, which Telegram rejects with 400.
+		if _, err := b.bot.DeleteWebhook(ctx, nil); err != nil {
 			return err
 		}
 	}
