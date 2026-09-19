@@ -1,5 +1,5 @@
-github.com/go-sphere/jsoncompressor v0.0.3 h1:Jpdw5vWK5ZDtyd5KQbxvZqOOipgiGW++HCRunIP6vKo=
-github.com/go-sphere/jsoncompressor v0.0.3/go.mod h1:VtfZrSqHNlVWsPO+7U/CGEf7JhfMdEqj/ntquQHNlT0=
+github.com/go-sphere/jsoncompressor v0.0.4 h1:2AJyQ/wmzMByQPKQzJtqcfMKbu3a/pwR8tsIRMemLM0=
+github.com/go-sphere/jsoncompressor v0.0.4/go.mod h1:wOZHY34vQ0DC71NT1Gyy5krpowQLnTHrzKIwE3Qx178=
 github.com/go-telegram/bot v1.27.0 h1:PG9yBDzM8O26oUerE9SZwWlHon4RpH8WcNslZ7CEZmE=
 github.com/go-telegram/bot v1.27.0/go.mod h1:i2TRs7fXWIeaceF3z7KzsMt/he0TwkVC680mvdTFYeM=
 github.com/telegram-mini-apps/init-data-golang v1.5.0 h1:rtpsmQ/nihkicPvnrdRXmHHtTnPvG1FmxMRZJwMKPz0=
