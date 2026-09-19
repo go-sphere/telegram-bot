@@ -10,7 +10,7 @@ DIRECT_ORIGIN := GOPRIVATE=github.com/go-sphere/*
 
 .DEFAULT_GOAL := check
 
-.PHONY: deps-update tidy fmt test lint check
+.PHONY: deps-update tidy tidy-check fmt build test lint check
 
 deps-update:
 	@GOWORK=off $(DIRECT_ORIGIN) $(GO) mod tidy; \
@@ -21,9 +21,17 @@ deps-update:
 tidy:
 	GOWORK=off $(GO) mod tidy
 
+# Non-mutating counterpart of tidy, for CI: fails if go.mod/go.sum are not
+# what a consumer would resolve.
+tidy-check:
+	GOWORK=off $(GO) mod tidy -diff
+
 fmt:
 	$(GO) fmt ./...
 	$(GOLANGCI_LINT) fmt --no-config --enable gofmt --enable goimports
+
+build:
+	$(GO) build ./...
 
 test:
 	$(GO) test ./...
@@ -34,7 +42,6 @@ lint:
 	$(GOLANGCI_LINT) run --no-config
 	$(NILAWAY) -include-pkgs="$$($(GO) list -m)" ./...
 
-check:
-	GOWORK=off $(GO) mod tidy -diff
+check: tidy-check
 	$(MAKE) lint
 	$(MAKE) test
