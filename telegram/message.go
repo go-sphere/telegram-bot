@@ -8,10 +8,12 @@ import (
 )
 
 // Button is an alias for Telegram's inline keyboard button.
+// Create one with NewButton or NewURLButton and place it in Message.Button.
 type Button = models.InlineKeyboardButton
 
 // NewButton creates an inline keyboard button with text, callback route, and data.
-// The route and data are marshaled together to form the callback data. The
+// The route and data are marshaled together to form the callback data, as
+// described in MarshalData (only json-tagged struct fields are encoded). The
 // returned error is non-nil when the route is empty or contains ":", or when the
 // marshaled payload exceeds the 64 bytes Telegram allows for callback data.
 func NewButton[T any](text, route string, data T) (Button, error) {
@@ -26,6 +28,7 @@ func NewButton[T any](text, route string, data T) (Button, error) {
 }
 
 // NewURLButton creates an inline keyboard button that opens a URL when pressed.
+// The URL is not validated locally.
 func NewURLButton(text, url string) Button {
 	return Button{
 		Text: text,
@@ -35,6 +38,8 @@ func NewURLButton(text, url string) Button {
 
 // NewBytesInputFile creates an InputFile from a byte slice for file uploads.
 // The name parameter specifies the filename that will be used in Telegram.
+// The returned file reads from data, which must not be modified until the
+// message has been sent; it can be uploaded once.
 func NewBytesInputFile(name string, data []byte) models.InputFile {
 	return &models.InputFileUpload{
 		Filename: name,
@@ -43,7 +48,8 @@ func NewBytesInputFile(name string, data []byte) models.InputFile {
 }
 
 // NewStringInputFile creates an InputFile from a URL string for media sharing.
-// This is used when referencing existing media by URL or file ID.
+// This is used when referencing existing media by URL or file ID; Telegram
+// fetches or resolves it when the message is sent.
 func NewStringInputFile(url string) models.InputFile {
 	return &models.InputFileString{
 		Data: url,
@@ -52,11 +58,12 @@ func NewStringInputFile(url string) models.InputFile {
 
 // Message represents a complete message that can be sent or edited in Telegram.
 // It supports text content, media attachments, formatting, and inline keyboards.
+// Send it with Bot.SendMessage or SendMessage.
 type Message struct {
-	Text      string                          // Message text content
-	Media     models.InputFile                // Optional media attachment (photo, document, etc.)
-	ParseMode models.ParseMode                // Text parsing mode (HTML, Markdown, etc.)
-	Button    [][]models.InlineKeyboardButton // Inline keyboard layout as rows of buttons
+	Text      string                          // Message text, or the photo caption when Media is set
+	Media     models.InputFile                // Optional photo, sent with sendPhoto; nil sends text only
+	ParseMode models.ParseMode                // Text parsing mode (HTML, Markdown, etc.); empty means plain text
+	Button    [][]models.InlineKeyboardButton // Inline keyboard layout as rows of buttons; empty means no keyboard
 }
 
 func (m *Message) replyMarkup() models.ReplyMarkup {

@@ -15,22 +15,29 @@ import (
 
 type (
 	// HandlerFunc defines a function type for handling Telegram bot updates.
-	// It processes an Update and returns an error if processing fails.
+	// It processes an Update and returns an error if processing fails; the
+	// error is passed to the bot's ErrorHandlerFunc rather than sent to the
+	// user. ctx carries the values added by middleware such as the auth
+	// middleware.
 	HandlerFunc = func(ctx context.Context, update *Update) error
 	// MiddlewareFunc defines a function type for creating middleware that wraps HandlerFunc.
 	// It takes a HandlerFunc and returns a wrapped HandlerFunc with additional functionality.
+	// A middleware may stop processing by returning without calling next.
 	MiddlewareFunc = func(next HandlerFunc) HandlerFunc
 )
 
 type (
 	// ErrorHandlerFunc defines a function type for handling errors that occur during update processing.
 	// It receives the error along with the bot instance and update that caused the error.
+	// SendErrorMessage has a compatible signature for showing errors to users.
 	ErrorHandlerFunc = func(ctx context.Context, bot *bot.Bot, update *Update, err error)
 )
 
 // WithMiddleware wraps a HandlerFunc with middleware chain and error handling.
 // It applies middleware in reverse order and converts the result to a bot.HandlerFunc.
 // If the wrapped handler returns an error, it calls the provided error handler.
+// The first middleware is therefore the outermost one and runs first. A nil e
+// discards errors.
 func WithMiddleware(h HandlerFunc, e ErrorHandlerFunc, middleware ...MiddlewareFunc) bot.HandlerFunc {
 	handler := h
 	for i := len(middleware) - 1; i >= 0; i-- {
@@ -66,6 +73,11 @@ func callbackSingleFlightKey(cq *models.CallbackQuery) string {
 // NewSingleFlightMiddleware creates a middleware that prevents duplicate callback query processing.
 // It uses singleflight to ensure that multiple identical callback queries (same message and same
 // button data) are processed only once.
+//
+// A press that arrives while an identical one is still being handled waits
+// for it and receives the same error instead of running the handler again;
+// later presses run normally. Updates that are not callback queries pass
+// through unchanged. Each call returns a middleware with its own state.
 func NewSingleFlightMiddleware() MiddlewareFunc {
 	sf := &singleflight.Group{}
 	return func(next HandlerFunc) HandlerFunc {
@@ -84,6 +96,8 @@ func NewSingleFlightMiddleware() MiddlewareFunc {
 
 // NewRecoveryMiddleware creates a middleware that recovers from panics in bot handlers.
 // It logs any panic that occurs during update processing and prevents the bot from crashing.
+// NewApp installs it by default; it is a github.com/go-telegram/bot middleware,
+// for use with bot.WithMiddlewares rather than AppendMiddlewares.
 func NewRecoveryMiddleware() bot.Middleware {
 	return func(next bot.HandlerFunc) bot.HandlerFunc {
 		return func(ctx context.Context, bot *bot.Bot, update *models.Update) {
@@ -213,10 +227,20 @@ type botInfoFetcher interface {
 // or text mentions. The middleware caches bot information to reduce API calls and optionally
 // removes mention text from the message content.
 //
+// Only messages in group and supergroup chats are filtered; private chats,
+// callback queries and other updates pass through. A group message reaches
+// the next handler when it replies to a message from the bot, mentions
+// "@username" in its text or caption, contains a text mention of the bot, or
+// carries a command with the "@username" suffix. Other group messages are
+// dropped silently (the middleware returns nil). If fetching the bot info
+// fails, the error is returned. With trimMention, the first matching mention
+// is removed from update.Message.Text or Caption before next runs.
+//
 // Parameters:
-//   - b: The bot client used to retrieve bot information
+//   - b: The bot client used to retrieve bot information, usually Bot.API()
 //   - trimMention: Whether to remove mention text from processed messages
-//   - infoExpire: Duration to cache bot information before refreshing
+//   - infoExpire: Duration to cache bot information before refreshing; zero
+//     or negative calls getMe for every group message
 func NewGroupMessageFilterMiddleware(b botInfoFetcher, trimMention bool, infoExpire time.Duration) MiddlewareFunc {
 	var (
 		ts   time.Time

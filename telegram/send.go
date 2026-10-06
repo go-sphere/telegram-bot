@@ -29,6 +29,21 @@ var _ apiClient = (*bot.Bot)(nil)
 // accessible), for regular messages it sends a new message. The function
 // automatically chooses between text, caption and media edits depending on the
 // new content and the original message type.
+//
+// In detail:
+//   - Regular message: sendMessage, or sendPhoto when m.Media is set, to the
+//     same chat.
+//   - Callback query on an accessible message: editMessageMedia when m.Media
+//     is set, editMessageCaption when the original has media, otherwise
+//     editMessageText.
+//   - Callback query on an inline message: editMessageMedia or
+//     editMessageText by inline message id.
+//   - Callback query whose message is no longer accessible: a callback answer
+//     telling the user the message is unavailable.
+//
+// It returns nil without a request when update or m is nil, or when the update
+// is neither a message nor a callback query. API errors are returned as
+// produced by github.com/go-telegram/bot. ctx bounds the HTTP request.
 func SendMessage(ctx context.Context, b *bot.Bot, update *Update, m *Message) error {
 	return sendMessage(ctx, b, update, m)
 }
@@ -113,7 +128,10 @@ func sendEditInlineMessage(ctx context.Context, c apiClient, inlineMessageID str
 
 // SendErrorMessage sends an error message to the user based on the update type.
 // For regular messages, it sends a new message with the error text.
-// For callback queries, it shows the error in a popup using AnswerCallbackQuery.
+// For callback queries, it shows the error in a popup using AnswerCallbackQuery,
+// truncated to 200 characters. It does nothing when err or update is nil, and
+// ignores errors from the Bot API. Its signature matches ErrorHandlerFunc, so
+// it can be passed to WithErrorHandler to show handler errors to users.
 func SendErrorMessage(ctx context.Context, b *bot.Bot, update *Update, err error) {
 	sendErrorMessage(ctx, b, update, err)
 }
@@ -154,6 +172,7 @@ type broadcastOptions struct {
 }
 
 // BroadcastOption defines a function type for configuring broadcast operations.
+// Pass options to BroadcastMessage.
 type BroadcastOption func(*broadcastOptions)
 
 func newBroadcastOptions(opts ...BroadcastOption) *broadcastOptions {
@@ -169,6 +188,9 @@ func newBroadcastOptions(opts ...BroadcastOption) *broadcastOptions {
 
 // WithProgress sets a progress callback function for broadcast operations.
 // The callback receives (current index, error count, total count) during broadcasting.
+// It is called before each item and once more with (total, errors, total)
+// after the last item when the broadcast is not stopped early. It runs on the
+// goroutine that called BroadcastMessage.
 func WithProgress(progress func(int, int, int)) BroadcastOption {
 	return func(o *broadcastOptions) {
 		o.progress = progress
@@ -176,7 +198,8 @@ func WithProgress(progress func(int, int, int)) BroadcastOption {
 }
 
 // WithTerminalOnSendError configures whether broadcasting should stop on the first send error.
-// If true, broadcasting terminates immediately on any send failure.
+// If true, broadcasting terminates immediately on any send failure and
+// BroadcastMessage returns that send error unwrapped. The default is false.
 func WithTerminalOnSendError(terminalOnSendError bool) BroadcastOption {
 	return func(o *broadcastOptions) {
 		o.terminalOnSendError = terminalOnSendError
@@ -184,17 +207,21 @@ func WithTerminalOnSendError(terminalOnSendError bool) BroadcastOption {
 }
 
 // BroadcastError reports a broadcast that finished with some failed sends.
+// BroadcastMessage returns it as *BroadcastError; use errors.As to read the
+// counts. errors.Is and errors.As also see the first send error through Unwrap.
 type BroadcastError struct {
-	Total   int
-	Failed  int
-	Success int
+	Total   int   // Number of items in the broadcast
+	Failed  int   // Number of items whose send function returned an error
+	Success int   // Total minus Failed
 	Err     error // The first send error encountered
 }
 
+// Error reports the success and failure counts and the first send error.
 func (e *BroadcastError) Error() string {
 	return fmt.Sprintf("broadcast: %d/%d messages sent, %d failed: %v", e.Success, e.Total, e.Failed, e.Err)
 }
 
+// Unwrap returns the first send error.
 func (e *BroadcastError) Unwrap() error {
 	return e.Err
 }
@@ -204,6 +231,12 @@ func (e *BroadcastError) Unwrap() error {
 // the rate limiter and reporting progress through optional callbacks. Unless
 // WithTerminalOnSendError is set, every item is attempted and a *BroadcastError
 // summarizing the failures is returned when any send fails.
+//
+// Items are sent one at a time on the calling goroutine, in slice order. If
+// ctx is cancelled, or rateLimiter.Wait fails (for example because a deadline
+// would be exceeded), BroadcastMessage stops and returns that error; items
+// already sent are not reported. b is passed to send unchanged and may be nil
+// when send does not use it.
 //
 // Type parameter T represents the data type for each broadcast target.
 //
@@ -266,6 +299,12 @@ const maxTelegramRetryAfter = time.Minute
 // cancelled or maxRetries sends have failed. Returns ctx.Err() when the context
 // is cancelled while waiting, or an error if max retries are exceeded or a
 // non-rate-limit error occurs.
+//
+// send is called at most maxRetries+1 times. Only errors matching
+// *github.com/go-telegram/bot.TooManyRequestsError (via errors.As) are retried;
+// any other error is returned unchanged. A negative maxRetries returns an
+// error without calling send. The max-retries error does not wrap the last
+// rate-limit error.
 func RetryOnTooManyRequestsErrorContext(ctx context.Context, maxRetries int, send func() error) error {
 	if maxRetries < 0 {
 		return errors.New("telegram: max retries exceeded")
@@ -298,7 +337,8 @@ func RetryOnTooManyRequestsErrorContext(ctx context.Context, maxRetries int, sen
 
 // RetryOnTooManyRequestsError implements automatic retry logic for Telegram rate
 // limit errors. It is a convenience wrapper around
-// RetryOnTooManyRequestsErrorContext with a background context.
+// RetryOnTooManyRequestsErrorContext with a background context, so waiting
+// cannot be cancelled; prefer the Context variant inside handlers.
 func RetryOnTooManyRequestsError(maxRetries int, send func() error) error {
 	return RetryOnTooManyRequestsErrorContext(context.Background(), maxRetries, send)
 }
