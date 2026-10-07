@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -18,14 +19,19 @@ import (
 // calling TmaAuth.ParseToken.
 const AuthorizationPrefixTMA = "tma"
 
+// ErrEmptyBotToken is returned by ParseToken and GenerateToken when the
+// TmaAuth has no bot token, typically a missing configuration value.
+var ErrEmptyBotToken = errors.New("tmaauth: bot token is empty")
+
 // Claims is the parsed Mini App init data, an alias for
 // github.com/telegram-mini-apps/init-data-golang.InitData. User.ID identifies
 // the Telegram user.
 type Claims = initdata.InitData
 
 // TmaAuth validates and signs Mini App init data for one bot token.
-// Create it with NewTmaAuth; the zero value has an empty token and validates
-// nothing useful. A TmaAuth is immutable and safe for concurrent use.
+// Create it with NewTmaAuth. With an empty bot token (including the zero
+// value) ParseToken and GenerateToken return ErrEmptyBotToken, because a
+// signature keyed by an empty token can be forged by anyone. A TmaAuth is immutable and safe for concurrent use.
 type TmaAuth struct {
 	token string
 	expIn time.Duration
@@ -45,13 +51,17 @@ func NewTmaAuth(token string, expIn time.Duration) *TmaAuth {
 // ParseToken validates the raw init data query string token (without the
 // "tma " scheme) and returns its parsed claims.
 //
-// It returns an error, with zero Claims, when the query is malformed, the hash
+// It returns ErrEmptyBotToken when the TmaAuth has no bot token. Otherwise it
+// returns an error, with zero Claims, when the query is malformed, the hash
 // is missing or does not match the bot token, auth_date is missing or invalid
 // while an expiration is configured, or the data is older than expIn. These
 // errors wrap or equal the exported errors of
 // github.com/telegram-mini-apps/init-data-golang (for example ErrSignInvalid,
 // ErrExpired, ErrSignMissing); match them with errors.Is. ctx is not used.
 func (t *TmaAuth) ParseToken(ctx context.Context, token string) (Claims, error) {
+	if t.token == "" {
+		return Claims{}, ErrEmptyBotToken
+	}
 	err := initdata.Validate(token, t.token, t.expIn)
 	if err != nil {
 		return Claims{}, err
@@ -68,8 +78,12 @@ func (t *TmaAuth) ParseToken(ctx context.Context, token string) (Claims, error) 
 // seconds) becomes auth_date; claims.Hash is ignored. Real init data is
 // created by Telegram, so this is mainly useful for tests and local tools.
 //
-// It returns an error when claims is nil or cannot be encoded. ctx is not used.
+// It returns ErrEmptyBotToken when the TmaAuth has no bot token, and an error
+// when claims is nil or cannot be encoded. ctx is not used.
 func (t *TmaAuth) GenerateToken(ctx context.Context, claims *Claims) (string, error) {
+	if t.token == "" {
+		return "", ErrEmptyBotToken
+	}
 	if claims == nil {
 		return "", fmt.Errorf("claims must not be nil")
 	}
