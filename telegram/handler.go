@@ -172,13 +172,22 @@ func removeEntitySuffix(text string, e models.MessageEntity, suffix string) stri
 		return text
 	}
 	entityText := text[start:end]
-	return text[:start] + strings.TrimSuffix(entityText, suffix) + text[end:]
+	if hasSuffixFold(entityText, suffix) {
+		entityText = entityText[:len(entityText)-len(suffix)]
+	}
+	return text[:start] + entityText + text[end:]
+}
+
+// hasSuffixFold is strings.HasSuffix ignoring case. Telegram usernames are
+// case-insensitive ASCII, so "@MyBot" and "@mybot" address the same bot.
+func hasSuffixFold(s, suffix string) bool {
+	return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
 }
 
 // trimBotMentions removes mentions of the bot from text and reports whether the
 // text addresses the bot. When trim is false it only detects. Detection covers
 // "@username" mentions, text_mention entities pointing at the bot by user id and
-// bot commands carrying an "@username" suffix. Trimming stops after the first
+// bot commands carrying an "@username" suffix; usernames match case-insensitively. Trimming stops after the first
 // match: entity offsets describe the original text, so removing one mention makes
 // every later offset stale and they must not be applied anymore.
 func trimBotMentions(text string, entities []models.MessageEntity, botID int64, username string, trim bool) (string, bool) {
@@ -189,7 +198,7 @@ func trimBotMentions(text string, entities []models.MessageEntity, botID int64, 
 		}
 		switch e.Type {
 		case models.MessageEntityTypeMention:
-			if entityText == "@"+username {
+			if strings.EqualFold(entityText, "@"+username) {
 				if !trim {
 					return text, true
 				}
@@ -203,7 +212,7 @@ func trimBotMentions(text string, entities []models.MessageEntity, botID int64, 
 				return removeEntityRange(text, e), true
 			}
 		case models.MessageEntityTypeBotCommand:
-			if strings.HasSuffix(entityText, "@"+username) {
+			if hasSuffixFold(entityText, "@"+username) {
 				if !trim {
 					return text, true
 				}

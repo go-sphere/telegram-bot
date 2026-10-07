@@ -105,6 +105,26 @@ func TestTrimBotMentions(t *testing.T) {
 			wantTrimmed: strPtr("你好  帮我"),
 		},
 		{
+			name:        "mention matches username case-insensitively",
+			text:        "@mybot hi",
+			entities:    func() []models.MessageEntity { return []models.MessageEntity{mentionEntity("@mybot hi", "@mybot")} },
+			username:    "MyBot",
+			wantHit:     true,
+			wantTrimmed: strPtr(" hi"),
+		},
+		{
+			name: "bot command suffix matches case-insensitively",
+			text: "/cmd@MYBOT arg",
+			entities: func() []models.MessageEntity {
+				e := mentionEntity("/cmd@MYBOT arg", "/cmd@MYBOT")
+				e.Type = models.MessageEntityTypeBotCommand
+				return []models.MessageEntity{e}
+			},
+			username:    "mybot",
+			wantHit:     true,
+			wantTrimmed: strPtr("/cmd arg"),
+		},
+		{
 			name:        "mention with emoji prefix",
 			text:        "🎉@mybot hi",
 			entities:    func() []models.MessageEntity { return []models.MessageEntity{mentionEntity("🎉@mybot hi", "@mybot")} },
