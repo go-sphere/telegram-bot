@@ -117,11 +117,12 @@ func (b *Bot) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close calls the Telegram Bot API "close" method through the underlying
-// client and then detaches the client from b. It does not stop polling: cancel
-// the context passed to Start for that. The Bot API close method is meant for
-// moving a bot between Bot API servers, and Telegram may reject it (for
-// example shortly after the bot was launched); its error is returned.
+// Close calls the Telegram Bot API "close" method, then detaches the client
+// from b. It is not a cleanup method and must not be deferred as one: the Bot
+// API close method is only for moving a bot from one Bot API server to
+// another, Telegram rejects it with 429 for the first 10 minutes after the bot
+// is launched, and it does not stop polling (cancel the context passed to
+// Start for that). Normal shutdown needs no call at all.
 //
 // The client is detached even when the request fails, so API returns nil and
 // other methods must not be called afterwards. Calling Close again is a no-op
